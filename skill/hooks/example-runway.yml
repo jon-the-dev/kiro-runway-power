@@ -1,0 +1,52 @@
+# Example Runway configuration using the CloudFront invalidation hook
+
+deployments:
+  - modules:
+      - path: infrastructure/
+        type: cfn
+        options:
+          cfngin_config: cfngin.yaml
+    environments:
+      dev:
+        hooks:
+          post_deploy:
+            - path: hooks.cloudfront_invalidation.cfngin_hook
+              args:
+                distribution_id: ${cfn ${AWS::Region}.cmm-web-dev-cloudfront.Outputs.DistributionId}
+                paths:
+                  - "/*"
+                wait: true
+                timeout: 600
+      prod:
+        hooks:
+          post_deploy:
+            - path: hooks.cloudfront_invalidation.cfngin_hook
+              args:
+                distribution_id: ${cfn ${AWS::Region}.cmm-web-prod-cloudfront.Outputs.DistributionId}
+                paths:
+                  - "/*"
+                  - "/api/*"
+                wait: false  # Don't wait in prod to speed up deployments
+
+  - modules:
+      - path: frontend/
+        type: static
+    environments:
+      dev:
+        hooks:
+          post_deploy:
+            - path: hooks.cloudfront_invalidation.cfngin_hook
+              args:
+                distribution_id: E1234567890ABC  # Hardcoded for dev
+                paths:
+                  - "/*"
+                wait: true
+      prod:
+        hooks:
+          post_deploy:
+            - path: hooks.cloudfront_invalidation.cfngin_hook
+              args:
+                distribution_id: E0987654321XYZ  # Hardcoded for prod
+                paths:
+                  - "/*"
+                wait: false
