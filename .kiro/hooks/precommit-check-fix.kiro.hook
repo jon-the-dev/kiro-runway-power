@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Pre-commit Check & Fix",
+  "description": "Automatically runs pre-commit checks when agent execution completes and fixes any issues found in the repository",
+  "version": "1",
+  "when": {
+    "type": "agentStop"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Run pre-commit checks on all files using `pre-commit run --all-files`. If any issues are found, fix them automatically and run the checks again until all issues are resolved."
+  }
+}

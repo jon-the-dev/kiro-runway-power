@@ -1,0 +1,38 @@
+# Example CFNgin configuration using the CloudFront invalidation hook
+
+namespace: cmm-web
+cfngin_bucket: cmm-cfngin-${AWS::AccountId}-${AWS::Region}
+
+# Pre-hooks run before stack operations
+pre_hooks:
+  - path: hooks.cloudfront_invalidation.cfngin_hook
+    required: true
+    args:
+      distribution_id: E1234567890ABC  # Replace with your distribution ID
+      paths:
+        - "/*"
+        - "/api/*"
+        - "/assets/*"
+      wait: true
+      timeout: 900
+
+# Post-hooks run after stack operations
+post_hooks:
+  - path: hooks.cloudfront_invalidation.cfngin_hook
+    required: true
+    args:
+      distribution_id: ${output cloudfront-stack::DistributionId}  # Reference from stack output
+      paths:
+        - "/*"
+      wait: false  # Don't wait for completion in post-hook
+
+stacks:
+  - name: cloudfront-stack
+    template_path: templates/cloudfront.yaml
+    variables:
+      DomainName: example.com
+      
+  - name: web-app-stack
+    template_path: templates/webapp.yaml
+    requires:
+      - cloudfront-stack

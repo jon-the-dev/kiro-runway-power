@@ -1,0 +1,149 @@
+# Example integration for 4_registration-site/stacks.yaml
+# This shows how to integrate the env_file_generator hook with your existing deployment
+
+namespace: cmm-${environment}
+
+variables:
+  environment: dev  # or prod
+
+# Pre-deploy hooks - run before stack deployment
+pre_deploy:
+  # Generate .env.local for Next.js registration site
+  - path: hooks.env_file_generator.cfngin_hook
+    required: true
+    args:
+      output_file: ./4_registration-site/app/.env.local
+      variables:
+        # API Configuration - from your API stack
+        NEXT_PUBLIC_API_URL: ${cfn ${namespace}-api.ApiUrl}
+        NEXT_PUBLIC_API_ENDPOINT: ${cfn ${namespace}-api.ApiEndpoint}
+        
+        # Authentication - from Cognito stack
+        NEXT_PUBLIC_USER_POOL_ID: ${cfn ${namespace}-cognito.UserPoolId}
+        NEXT_PUBLIC_USER_POOL_CLIENT_ID: ${cfn ${namespace}-cognito.UserPoolClientId}
+        NEXT_PUBLIC_USER_POOL_DOMAIN: ${cfn ${namespace}-cognito.UserPoolDomain}
+        NEXT_PUBLIC_COGNITO_REGION: ${AWS::Region}
+        
+        # Storage - from S3 buckets stack
+        NEXT_PUBLIC_UPLOAD_BUCKET: ${cfn ${namespace}-buckets.UploadBucketName}
+        NEXT_PUBLIC_ASSETS_BUCKET: ${cfn ${namespace}-buckets.AssetsBucketName}
+        NEXT_PUBLIC_ARTIFACTS_BUCKET: ${cfn ${namespace}-buckets.ArtifactsBucketName}
+        
+        # Database - from DynamoDB tables stack
+        NEXT_PUBLIC_USERS_TABLE: ${cfn ${namespace}-tables.UsersTableName}
+        NEXT_PUBLIC_SCANS_TABLE: ${cfn ${namespace}-tables.ScansTableName}
+        NEXT_PUBLIC_REPORTS_TABLE: ${cfn ${namespace}-tables.ReportsTableName}
+        
+        # Queues - from SQS stack
+        NEXT_PUBLIC_SCAN_QUEUE_URL: ${cfn ${namespace}-queues.ScanIntakeQueueUrl}
+        NEXT_PUBLIC_REPORT_QUEUE_URL: ${cfn ${namespace}-queues.ReportIntakeQueueUrl}
+        
+        # Environment Configuration
+        ENVIRONMENT: ${environment}
+        NODE_ENV: production
+        NEXT_PUBLIC_APP_NAME: "CMM Registration Portal"
+        NEXT_PUBLIC_APP_VERSION: "1.0.0"
+        NEXT_PUBLIC_AWS_REGION: ${AWS::Region}
+        
+        # Feature Flags (environment-specific)
+        NEXT_PUBLIC_ENABLE_DEBUG: ${{ 'true' if environment == 'dev' else 'false' }}
+        NEXT_PUBLIC_ENABLE_ANALYTICS: ${{ 'false' if environment == 'dev' else 'true' }}
+        
+        # CDN Configuration (if using CloudFront)
+        NEXT_PUBLIC_CDN_URL: ${cfn ${namespace}-site.CloudFrontDistributionDomainName}
+        
+        # Optional: Company/Support Information from SSM
+        NEXT_PUBLIC_SUPPORT_EMAIL: ${ssm /cmm-${environment}/support-email}
+        NEXT_PUBLIC_COMPANY_NAME: ${ssm /cmm-${environment}/company-name}
+        NEXT_PUBLIC_HELP_URL: ${ssm /cmm-${environment}/help-url}
+      overwrite: true
+      create_backup: true
+      verbose: true
+
+  # Optional: Generate .env for any Node.js backend components
+  - path: hooks.env_file_generator.cfngin_hook
+    required: false  # Optional if you don't have backend components
+    args:
+      output_file: ./4_registration-site/api/.env
+      variables:
+        # Server-side configuration (not NEXT_PUBLIC_*)
+        DATABASE_URL: ${cfn ${namespace}-database.ConnectionString}
+        REDIS_URL: ${cfn ${namespace}-cache.RedisEndpoint}
+        
+        # AWS Resources for server-side operations
+        AWS_REGION: ${AWS::Region}
+        S3_UPLOAD_BUCKET: ${cfn ${namespace}-buckets.UploadBucketName}
+        SQS_SCAN_QUEUE_URL: ${cfn ${namespace}-queues.ScanIntakeQueueUrl}
+        
+        # DynamoDB Tables for server operations
+        USERS_TABLE: ${cfn ${namespace}-tables.UsersTableName}
+        SCANS_TABLE: ${cfn ${namespace}-tables.ScansTableName}
+        
+        # Cognito for server-side authentication
+        USER_POOL_ID: ${cfn ${namespace}-cognito.UserPoolId}
+        USER_POOL_CLIENT_ID: ${cfn ${namespace}-cognito.UserPoolClientId}
+        
+        # Application Configuration
+        NODE_ENV: production
+        LOG_LEVEL: ${{ 'debug' if environment == 'dev' else 'info' }}
+        PORT: 3000
+        
+        # External Services (from SSM for security)
+        SMTP_HOST: ${ssm /cmm-${environment}/smtp-host}
+        SMTP_USER: ${ssm /cmm-${environment}/smtp-user}
+        SMTP_PASS: ${ssm /cmm-${environment}/smtp-password}
+        
+        # API Keys and Secrets
+        JWT_SECRET: ${ssm /cmm-${environment}/jwt-secret}
+        ENCRYPTION_KEY: ${ssm /cmm-${environment}/encryption-key}
+      overwrite: true
+      create_backup: true
+
+# Your existing stacks
+stacks:
+  - name: registration-site
+    template_path: templates/site.yaml
+    variables:
+      # Your existing variables
+      Environment: ${environment}
+      # ... other variables
+
+# Post-deploy hooks - run after successful deployment
+post_deploy:
+  # Build and deploy the Next.js application
+  - path: hooks.npm_build.build_and_sync_app
+    args:
+      bucket_name: ${cfn ${namespace}-site.S3BucketName}
+      app_path: ./4_registration-site/app
+      environment: ${environment}
+  
+  # Invalidate CloudFront cache
+  - path: hooks.cloudfront_invalidation.cfngin_hook
+    args:
+      distribution_id: ${cfn ${namespace}-site.CloudFrontDistributionId}
+      paths: ["/*"]
+
+# Cleanup hooks - run before stack destruction
+pre_destroy:
+  # Clean up S3 buckets before stack deletion
+  - path: runway.cfngin.hooks.cleanup_s3.purge_bucket
+    args:
+      bucket_name: ${cfn ${namespace}-buckets.UploadBucketName}
+  
+  - path: runway.cfngin.hooks.cleanup_s3.purge_bucket
+    args:
+      bucket_name: ${cfn ${namespace}-site.S3BucketName}
+
+# Post-destroy cleanup
+post_destroy:
+  # Clean up SSM parameters
+  - path: runway.cfngin.hooks.cleanup_ssm.delete_param
+    args:
+      parameter_name: /cmm-${environment}/support-email
+  
+  # Remove generated .env files
+  - path: hooks.file_cleanup.remove_files
+    args:
+      files:
+        - ./4_registration-site/app/.env.local
+        - ./4_registration-site/api/.env

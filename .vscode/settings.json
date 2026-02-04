@@ -1,0 +1,5 @@
+{
+    "kiroAgent.trustedCommands": [
+        "pre-commit run --all-files"
+    ]
+}

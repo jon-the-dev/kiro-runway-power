@@ -1,0 +1,45 @@
+# Example CFNgin configuration with SAM deploy and delete hooks
+namespace: cmm-${environment}
+
+variables:
+  environment: dev
+
+pre_hooks:
+  # Deploy SAM template before other stacks
+  - path: hooks.sam_deploy.cfngin_hook
+    required: true
+    args:
+      template_file: ../scanner-lambda/template.yaml
+      stack_name: cmm-scanner-lambda-${environment}
+      config_file: ../scanner-lambda/samconfig.toml
+      env: ${environment}
+      parameters:
+        Environment: ${environment}
+        ScannerTimeout: 900
+        ScannerMemory: 1024
+      capabilities:
+        - CAPABILITY_IAM
+        - CAPABILITY_NAMED_IAM
+      wait: true
+      timeout: 1800
+      working_directory: scanner-lambda
+
+stacks:
+  # Additional infrastructure stacks can go here
+  - name: cmm-infrastructure
+    template_path: templates/infrastructure.yaml
+    variables:
+      Environment: ${environment}
+
+post_hooks:
+  # Optional: Delete SAM stack during teardown
+  - path: hooks.sam_deploy.cfngin_delete_hook
+    required: false  # Don't fail if stack doesn't exist
+    args:
+      stack_name: cmm-scanner-lambda-${environment}
+      wait: true
+      timeout: 1800
+      # Optionally retain certain resources
+      retain_resources:
+        - ScannerArtifactsBucket  # Keep S3 bucket with scan results
+        - ScanReportsTable        # Keep DynamoDB table with scan history

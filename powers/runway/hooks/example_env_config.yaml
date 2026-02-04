@@ -1,0 +1,93 @@
+# Example CFNgin configuration for using the env_file_generator hook
+# Add this to your 4_registration-site/stacks.yaml
+
+namespace: cmm-${environment}
+
+variables:
+  environment: dev  # or prod
+
+# Pre-deploy hooks to generate .env files before building/deploying
+pre_deploy:
+  # Generate .env.local for Next.js registration site
+  - path: hooks.env_file_generator.cfngin_hook
+    required: true
+    args:
+      output_file: ./4_registration-site/app/.env.local
+      variables:
+        # API URLs from your API stack
+        NEXT_PUBLIC_API_URL: ${cfn ${namespace}-api.ApiUrl}
+        NEXT_PUBLIC_API_ENDPOINT: ${cfn ${namespace}-api.ApiEndpoint}
+        
+        # Cognito configuration from auth stack
+        NEXT_PUBLIC_USER_POOL_ID: ${cfn ${namespace}-cognito.UserPoolId}
+        NEXT_PUBLIC_USER_POOL_CLIENT_ID: ${cfn ${namespace}-cognito.UserPoolClientId}
+        NEXT_PUBLIC_USER_POOL_DOMAIN: ${cfn ${namespace}-cognito.UserPoolDomain}
+        
+        # S3 bucket information
+        NEXT_PUBLIC_UPLOAD_BUCKET: ${cfn ${namespace}-buckets.UploadBucketName}
+        NEXT_PUBLIC_ASSETS_BUCKET: ${cfn ${namespace}-buckets.AssetsBucketName}
+        
+        # DynamoDB table names
+        NEXT_PUBLIC_USERS_TABLE: ${cfn ${namespace}-tables.UsersTableName}
+        NEXT_PUBLIC_SCANS_TABLE: ${cfn ${namespace}-tables.ScansTableName}
+        
+        # Environment and configuration
+        ENVIRONMENT: ${environment}
+        NODE_ENV: production
+        NEXT_PUBLIC_APP_NAME: "CMM Registration"
+        NEXT_PUBLIC_APP_VERSION: "1.0.0"
+        
+        # CloudFront distribution (if applicable)
+        NEXT_PUBLIC_CDN_URL: ${cfn ${namespace}-site.CloudFrontDistributionDomainName}
+        
+        # SQS Queue URLs (for status checking)
+        NEXT_PUBLIC_SCAN_QUEUE_URL: ${cfn ${namespace}-queues.ScanIntakeQueueUrl}
+        
+        # Optional: SSM parameters
+        NEXT_PUBLIC_SUPPORT_EMAIL: ${ssm /cmm-${environment}/support-email}
+        NEXT_PUBLIC_COMPANY_NAME: ${ssm /cmm-${environment}/company-name}
+      overwrite: true
+      create_backup: true
+      verbose: true
+
+  # Generate .env for Node.js backend/API (if you have one)
+  - path: hooks.env_file_generator.cfngin_hook
+    required: true
+    args:
+      output_file: ./api/.env
+      variables:
+        # Database connections
+        DATABASE_URL: ${cfn ${namespace}-database.ConnectionString}
+        REDIS_URL: ${cfn ${namespace}-cache.RedisEndpoint}
+        
+        # AWS Resources
+        AWS_REGION: ${AWS::Region}
+        S3_BUCKET: ${cfn ${namespace}-buckets.DataBucketName}
+        SQS_QUEUE_URL: ${cfn ${namespace}-queues.ScanIntakeQueueUrl}
+        
+        # DynamoDB Tables
+        USERS_TABLE: ${cfn ${namespace}-tables.UsersTableName}
+        SCANS_TABLE: ${cfn ${namespace}-tables.ScansTableName}
+        REPORTS_TABLE: ${cfn ${namespace}-tables.ReportsTableName}
+        
+        # Cognito for server-side auth
+        USER_POOL_ID: ${cfn ${namespace}-cognito.UserPoolId}
+        USER_POOL_CLIENT_ID: ${cfn ${namespace}-cognito.UserPoolClientId}
+        
+        # Application settings
+        NODE_ENV: production
+        LOG_LEVEL: info
+        PORT: 3000
+        
+        # External integrations
+        SMTP_HOST: ${ssm /cmm-${environment}/smtp-host}
+        SMTP_USER: ${ssm /cmm-${environment}/smtp-user}
+        SMTP_PASS: ${ssm /cmm-${environment}/smtp-password}
+      overwrite: true
+      create_backup: true
+
+stacks:
+  # Your existing stacks here
+  - name: registration-site
+    template_path: templates/site.yaml
+    # ... rest of your stack configuration

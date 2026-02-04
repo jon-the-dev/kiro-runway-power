@@ -1,0 +1,381 @@
+#!/usr/bin/env python3
+"""
+CFNgin hook for generating .env files from key-value pairs.
+
+This hook allows you to create environment files for Next.js and Node.js applications
+by providing key-value pairs that can include CFNgin stack outputs, SSM parameters,
+or static values.
+
+Usage in CFNgin:
+    pre_deploy:
+      - path: hooks.env_file_generator.cfngin_hook
+        args:
+          output_file: ./app/.env.local
+          variables:
+            NEXT_PUBLIC_API_URL: ${cfn api-stack.ApiUrl}
+            NEXT_PUBLIC_USER_POOL_ID: ${cfn cognito-stack.UserPoolId}
+            DATABASE_URL: ${ssm /app-${environment}/database-url}
+            ENVIRONMENT: ${environment}
+          overwrite: true
+          create_backup: true
+
+Command Line Usage:
+    python hooks/env_file_generator.py --output-file .env.local \
+        --variables NEXT_PUBLIC_API_URL=https://api.example.com \
+                   DATABASE_URL=postgres://localhost:5432/db \
+        --overwrite --verbose
+"""
+
+import argparse
+import json
+import logging
+import os
+import shutil
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+try:
+    from python_dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+class EnvFileGeneratorError(Exception):
+    """Custom exception for env file generator errors."""
+    pass
+
+
+class EnvFileGenerator:
+    """Generates .env files from key-value pairs."""
+    
+    def __init__(self, output_file: str, variables: Dict[str, Any], 
+                 overwrite: bool = False, create_backup: bool = True,
+                 verbose: bool = False):
+        """
+        Initialize the env file generator.
+        
+        Args:
+            output_file: Path to the output .env file
+            variables: Dictionary of environment variables to write
+            overwrite: Whether to overwrite existing files
+            create_backup: Whether to create backup of existing files
+            verbose: Enable verbose logging
+        """
+        self.output_file = Path(output_file)
+        self.variables = variables or {}
+        self.overwrite = overwrite
+        self.create_backup = create_backup
+        self.verbose = verbose
+        
+        if self.verbose:
+            logger.setLevel(logging.DEBUG)
+    
+    def _create_backup(self) -> Optional[str]:
+        """Create backup of existing env file."""
+        if not self.output_file.exists():
+            return None
+            
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_file = self.output_file.with_suffix(f'.backup_{timestamp}')
+        
+        try:
+            shutil.copy2(self.output_file, backup_file)
+            logger.info(f"✅ Created backup: {backup_file}")
+            return str(backup_file)
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to create backup: {e}")
+            return None
+    
+    def _validate_variables(self) -> None:
+        """Validate environment variables."""
+        if not self.variables:
+            raise EnvFileGeneratorError("No variables provided")
+        
+        # Check for invalid variable names
+        invalid_vars = []
+        for key in self.variables.keys():
+            if not isinstance(key, str) or not key:
+                invalid_vars.append(key)
+            elif not key.replace('_', '').replace('-', '').isalnum():
+                # Allow alphanumeric, underscore, and hyphen
+                if not all(c.isalnum() or c in '_-' for c in key):
+                    invalid_vars.append(key)
+        
+        if invalid_vars:
+            raise EnvFileGeneratorError(f"Invalid variable names: {invalid_vars}")
+    
+    def _format_env_line(self, key: str, value: Any) -> str:
+        """Format a single environment variable line."""
+        # Convert value to string
+        str_value = str(value) if value is not None else ""
+        
+        # Escape quotes and handle multiline values
+        if '\n' in str_value or '"' in str_value:
+            # Use single quotes for complex values
+            escaped_value = str_value.replace("'", "\\'")
+            return f"{key}='{escaped_value}'"
+        elif ' ' in str_value or str_value == "":
+            # Quote values with spaces or empty values
+            return f'{key}="{str_value}"'
+        else:
+            # Simple values don't need quotes
+            return f"{key}={str_value}"
+    
+    def generate_env_file(self) -> str:
+        """Generate the .env file content."""
+        self._validate_variables()
+        
+        # Create header comment
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
+        lines = [
+            f"# Environment variables generated on {timestamp}",
+            f"# Generated by CMM env_file_generator hook",
+            f"# File: {self.output_file}",
+            "",
+        ]
+        
+        # Sort variables for consistent output
+        sorted_vars = sorted(self.variables.items())
+        
+        # Add variables
+        for key, value in sorted_vars:
+            lines.append(self._format_env_line(key, value))
+        
+        # Add final newline
+        lines.append("")
+        
+        return "\n".join(lines)
+    
+    def write_env_file(self) -> bool:
+        """Write the .env file to disk."""
+        try:
+            # Check if file exists and handle accordingly
+            if self.output_file.exists() and not self.overwrite:
+                raise EnvFileGeneratorError(
+                    f"File {self.output_file} exists and overwrite=False"
+                )
+            
+            # Create backup if requested
+            backup_file = None
+            if self.create_backup and self.output_file.exists():
+                backup_file = self._create_backup()
+            
+            # Ensure parent directory exists
+            self.output_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Generate and write content
+            content = self.generate_env_file()
+            
+            with open(self.output_file, 'w', encoding='utf-8') as f:
+                f.write(content)
+            
+            logger.info(f"✅ Generated env file: {self.output_file}")
+            logger.info(f"📝 Variables written: {len(self.variables)}")
+            
+            if self.verbose:
+                logger.debug(f"Variables: {list(self.variables.keys())}")
+                if backup_file:
+                    logger.debug(f"Backup created: {backup_file}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to write env file: {e}")
+            raise EnvFileGeneratorError(f"Failed to write env file: {e}")
+
+
+def cfngin_hook(context, **kwargs) -> bool:
+    """
+    CFNgin hook for generating .env files.
+    
+    Args:
+        context: CFNgin context object
+        **kwargs: Hook arguments
+            - output_file (str): Path to output .env file
+            - variables (dict): Environment variables to write
+            - overwrite (bool): Whether to overwrite existing files (default: False)
+            - create_backup (bool): Whether to backup existing files (default: True)
+            - verbose (bool): Enable verbose logging (default: False)
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        # Extract arguments
+        output_file = kwargs.get('output_file')
+        variables = kwargs.get('variables', {})
+        overwrite = kwargs.get('overwrite', False)
+        create_backup = kwargs.get('create_backup', True)
+        verbose = kwargs.get('verbose', False)
+        
+        # Validate required arguments
+        if not output_file:
+            raise EnvFileGeneratorError("output_file is required")
+        
+        if not variables:
+            raise EnvFileGeneratorError("variables dictionary is required")
+        
+        # Log hook execution
+        logger.info(f"🚀 Generating env file: {output_file}")
+        logger.info(f"📊 Variables to write: {len(variables)}")
+        
+        if verbose:
+            logger.debug(f"Hook arguments: {kwargs}")
+            logger.debug(f"Variables: {list(variables.keys())}")
+        
+        # Create generator and write file
+        generator = EnvFileGenerator(
+            output_file=output_file,
+            variables=variables,
+            overwrite=overwrite,
+            create_backup=create_backup,
+            verbose=verbose
+        )
+        
+        success = generator.write_env_file()
+        
+        if success:
+            logger.info("✅ Env file generation completed successfully")
+        else:
+            logger.error("❌ Env file generation failed")
+        
+        return success
+        
+    except Exception as e:
+        logger.error(f"❌ CFNgin hook failed: {e}")
+        return False
+
+
+def main():
+    """Command line interface for the env file generator."""
+    parser = argparse.ArgumentParser(
+        description="Generate .env files from key-value pairs",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Basic usage
+  python env_file_generator.py --output-file .env.local \\
+      --variables NEXT_PUBLIC_API_URL=https://api.example.com \\
+                 DATABASE_URL=postgres://localhost:5432/db
+
+  # With JSON variables
+  python env_file_generator.py --output-file .env.local \\
+      --json-variables '{"API_URL": "https://api.example.com", "DEBUG": "true"}'
+
+  # Overwrite existing file with backup
+  python env_file_generator.py --output-file .env.local \\
+      --variables NODE_ENV=production \\
+      --overwrite --create-backup --verbose
+        """
+    )
+    
+    parser.add_argument(
+        '--output-file', '-o',
+        required=True,
+        help='Path to output .env file'
+    )
+    
+    parser.add_argument(
+        '--variables', '-v',
+        nargs='*',
+        default=[],
+        help='Environment variables as KEY=VALUE pairs'
+    )
+    
+    parser.add_argument(
+        '--json-variables', '-j',
+        help='Environment variables as JSON string'
+    )
+    
+    parser.add_argument(
+        '--overwrite',
+        action='store_true',
+        help='Overwrite existing files'
+    )
+    
+    parser.add_argument(
+        '--create-backup',
+        action='store_true',
+        default=True,
+        help='Create backup of existing files (default: True)'
+    )
+    
+    parser.add_argument(
+        '--no-backup',
+        action='store_true',
+        help='Do not create backup of existing files'
+    )
+    
+    parser.add_argument(
+        '--verbose',
+        action='store_true',
+        help='Enable verbose logging'
+    )
+    
+    args = parser.parse_args()
+    
+    # Load environment variables from .env if available
+    if load_dotenv:
+        load_dotenv()
+    
+    # Parse variables
+    variables = {}
+    
+    # Parse KEY=VALUE pairs
+    for var in args.variables:
+        if '=' not in var:
+            logger.error(f"Invalid variable format: {var} (expected KEY=VALUE)")
+            return 1
+        key, value = var.split('=', 1)
+        variables[key] = value
+    
+    # Parse JSON variables
+    if args.json_variables:
+        try:
+            json_vars = json.loads(args.json_variables)
+            if not isinstance(json_vars, dict):
+                logger.error("JSON variables must be an object/dictionary")
+                return 1
+            variables.update(json_vars)
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON variables: {e}")
+            return 1
+    
+    if not variables:
+        logger.error("No variables provided")
+        return 1
+    
+    # Handle backup flag
+    create_backup = args.create_backup and not args.no_backup
+    
+    try:
+        # Create generator and write file
+        generator = EnvFileGenerator(
+            output_file=args.output_file,
+            variables=variables,
+            overwrite=args.overwrite,
+            create_backup=create_backup,
+            verbose=args.verbose
+        )
+        
+        success = generator.write_env_file()
+        return 0 if success else 1
+        
+    except EnvFileGeneratorError as e:
+        logger.error(f"❌ {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"❌ Unexpected error: {e}")
+        return 1
+
+
+if __name__ == '__main__':
+    exit(main())
